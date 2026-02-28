@@ -95,6 +95,10 @@ class HomeMaintenanceSensor(BinarySensorEntity):
             self._update_state_count()
             return
 
+        if trigger_type == "runtime":
+            self._update_state_runtime()
+            return
+
         self._update_state_time()
 
     def _update_state_count(self) -> None:
@@ -109,6 +113,41 @@ class HomeMaintenanceSensor(BinarySensorEntity):
             "current_count": current_count,
             "count_threshold": count_threshold,
             "count_entity_id": count_entity_id,
+            "last_performed": self.task.get("last_performed", ""),
+        }
+        if self.task.get("tag_id"):
+            self._attr_extra_state_attributes["tag_id"] = self.task["tag_id"]
+
+    def _update_state_runtime(self) -> None:
+        """Update state for runtime-based tasks."""
+        runtime_entity_id = self.task.get("runtime_entity_id")
+        runtime_threshold = self.task.get("runtime_threshold", 0)
+        runtime_baseline = self.task.get("runtime_baseline", 0)
+
+        current_value = None
+        delta = 0
+
+        if runtime_entity_id:
+            state = self.hass.states.get(runtime_entity_id)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    current_value = float(state.state)
+                    # Detect external reset (sensor went back below baseline)
+                    if current_value < runtime_baseline:
+                        runtime_baseline = 0
+                        self.task["runtime_baseline"] = 0
+                    delta = current_value - runtime_baseline
+                except (ValueError, TypeError):
+                    current_value = None
+
+        self._attr_is_on = delta >= runtime_threshold if runtime_threshold > 0 and current_value is not None else False
+        self._attr_extra_state_attributes = {
+            "trigger_type": "runtime",
+            "runtime_entity_id": runtime_entity_id,
+            "runtime_threshold": runtime_threshold,
+            "runtime_baseline": runtime_baseline,
+            "runtime_current": current_value,
+            "runtime_delta": round(delta, 2),
             "last_performed": self.task.get("last_performed", ""),
         }
         if self.task.get("tag_id"):

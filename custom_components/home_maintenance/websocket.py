@@ -60,6 +60,18 @@ def websocket_add_task(
 
     trigger_type = msg.get("trigger_type", "time")
 
+    # For runtime tasks, read current sensor value as initial baseline
+    runtime_entity_id = msg.get("runtime_entity_id")
+    runtime_threshold = msg.get("runtime_threshold", 0)
+    runtime_baseline = 0.0
+    if trigger_type == "runtime" and runtime_entity_id:
+        state = hass.states.get(runtime_entity_id)
+        if state and state.state not in ("unknown", "unavailable"):
+            try:
+                runtime_baseline = float(state.state)
+            except (ValueError, TypeError):
+                runtime_baseline = 0.0
+
     new_task = HomeMaintenanceTask(
         id=f"home_maintenance_{uuid.uuid4().hex}",
         title=msg["title"],
@@ -72,6 +84,9 @@ def websocket_add_task(
         count_entity_id=msg.get("count_entity_id"),
         count_threshold=msg.get("count_threshold", 0),
         current_count=0,
+        runtime_entity_id=runtime_entity_id,
+        runtime_threshold=float(runtime_threshold) if runtime_threshold else 0,
+        runtime_baseline=runtime_baseline,
     )
 
     labels = msg.get("labels", [])
@@ -218,6 +233,8 @@ async def async_register_websockets(hass: HomeAssistant) -> None:
                 vol.Optional("trigger_type"): str,
                 vol.Optional("count_entity_id"): str,
                 vol.Optional("count_threshold"): int,
+                vol.Optional("runtime_entity_id"): str,
+                vol.Optional("runtime_threshold"): vol.Coerce(float),
             }
         ),
     )

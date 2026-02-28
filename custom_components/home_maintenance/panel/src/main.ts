@@ -27,6 +27,8 @@ interface TaskFormData {
     tag: string;
     count_entity_id: string;
     count_threshold: number | "";
+    runtime_entity_id: string;
+    runtime_threshold: number | "";
 }
 
 export class HomeMaintenancePanel extends LitElement {
@@ -51,6 +53,8 @@ export class HomeMaintenancePanel extends LitElement {
         tag: "",
         count_entity_id: "",
         count_threshold: "",
+        runtime_entity_id: "",
+        runtime_threshold: "",
     };
     private _advancedOpen: boolean = false;
 
@@ -67,6 +71,8 @@ export class HomeMaintenancePanel extends LitElement {
         tag: "",
         count_entity_id: "",
         count_threshold: "",
+        runtime_entity_id: "",
+        runtime_threshold: "",
     };
 
     // Shared overflow menu state
@@ -121,6 +127,9 @@ export class HomeMaintenancePanel extends LitElement {
                     if (task.trigger_type === "count") {
                         return `${task.current_count} / ${task.count_threshold}`;
                     }
+                    if (task.trigger_type === "runtime") {
+                        return `${task.runtime_delta ?? 0} / ${task.runtime_threshold ?? 0}`;
+                    }
                     const type = task.interval_type;
                     const isSingular = task.interval_value === 1;
                     const labelKey = isSingular ? type.slice(0, -1) : type;
@@ -134,7 +143,7 @@ export class HomeMaintenancePanel extends LitElement {
                 minWidth: "150px",
                 maxWidth: "150px",
                 template: (task: any) => {
-                    if (task.trigger_type === "count") return "-";
+                    if (task.trigger_type === "count" || task.trigger_type === "runtime") return "-";
                     if (!task.last_performed) return "-";
 
                     const date = new Date(this.computeISODate(task.last_performed));
@@ -154,6 +163,16 @@ export class HomeMaintenancePanel extends LitElement {
                         return html`
                             <span style=${isDue ? "color: var(--error-color, red); font-weight: bold;" : ""}>
                                 ${task.current_count ?? 0} / ${task.count_threshold ?? 0}
+                            </span>`;
+                    }
+
+                    if (task.trigger_type === "runtime") {
+                        const delta = task.runtime_delta ?? 0;
+                        const threshold = task.runtime_threshold ?? 0;
+                        const isDue = threshold > 0 && delta >= threshold;
+                        return html`
+                            <span style=${isDue ? "color: var(--error-color, red); font-weight: bold;" : ""}>
+                                ${delta} / ${threshold}
                             </span>`;
                     }
 
@@ -224,7 +243,23 @@ export class HomeMaintenancePanel extends LitElement {
             count_entity_id: task.count_entity_id,
             count_threshold: task.count_threshold ?? 0,
             current_count: task.current_count ?? 0,
+            runtime_entity_id: task.runtime_entity_id,
+            runtime_threshold: task.runtime_threshold ?? 0,
+            runtime_baseline: task.runtime_baseline ?? 0,
+            runtime_delta: (() => {
+                if (task.trigger_type !== "runtime" || !task.runtime_entity_id) return 0;
+                const sensorState = this.hass?.states?.[task.runtime_entity_id];
+                if (!sensorState || sensorState.state === "unknown" || sensorState.state === "unavailable") return 0;
+                const current = parseFloat(sensorState.state);
+                if (isNaN(current)) return 0;
+                const baseline = task.runtime_baseline ?? 0;
+                const delta = current < baseline ? current : current - baseline;
+                return Math.round(delta * 100) / 100;
+            })(),
             interval_days: (() => {
+                if (task.trigger_type === "runtime") {
+                    return task.runtime_threshold ? task.runtime_threshold : Number.MAX_SAFE_INTEGER;
+                }
                 if (task.trigger_type === "count") {
                     // Sort count-based tasks by how close they are to threshold
                     return task.count_threshold ? (task.count_threshold - (task.current_count ?? 0)) : Number.MAX_SAFE_INTEGER;
@@ -241,6 +276,16 @@ export class HomeMaintenancePanel extends LitElement {
                 }
             })(),
             next_due: (() => {
+                if (task.trigger_type === "runtime") {
+                    const sensorState = this.hass?.states?.[task.runtime_entity_id ?? ""];
+                    if (!sensorState) return new Date(9999, 0, 1);
+                    const current = parseFloat(sensorState.state);
+                    if (isNaN(current)) return new Date(9999, 0, 1);
+                    const baseline = task.runtime_baseline ?? 0;
+                    const delta = current < baseline ? current : current - baseline;
+                    const isDue = (task.runtime_threshold ?? 0) > 0 && delta >= (task.runtime_threshold ?? 0);
+                    return isDue ? new Date(0) : new Date(9999, 0, 1);
+                }
                 if (task.trigger_type === "count") {
                     // For sorting: use a far-future date if not due, past date if due
                     const isDue = (task.current_count ?? 0) >= (task.count_threshold ?? 0);
@@ -271,7 +316,7 @@ export class HomeMaintenancePanel extends LitElement {
     }
 
     private get _basicSchema() {
-        const isCount = this._formData.trigger_type === "count";
+        const triggerType = this._formData.trigger_type;
         const schema: any[] = [
             { name: "title", required: true, selector: { text: {} }, },
             {
@@ -282,6 +327,7 @@ export class HomeMaintenancePanel extends LitElement {
                         options: [
                             { value: "time", label: "Time-based" },
                             { value: "count", label: "Count-based" },
+                            { value: "runtime", label: "Runtime-based" },
                         ],
                         mode: "dropdown"
                     },
@@ -289,10 +335,15 @@ export class HomeMaintenancePanel extends LitElement {
             },
         ];
 
-        if (isCount) {
+        if (triggerType === "count") {
             schema.push(
                 { name: "count_entity_id", required: true, selector: { entity: {} }, },
                 { name: "count_threshold", required: true, selector: { number: { min: 1, mode: "box" } }, },
+            );
+        } else if (triggerType === "runtime") {
+            schema.push(
+                { name: "runtime_entity_id", required: true, selector: { entity: { filter: { domain: "sensor" } } }, },
+                { name: "runtime_threshold", required: true, selector: { number: { min: 0.1, step: 0.1, mode: "box" } }, },
             );
         } else {
             schema.push(
@@ -326,7 +377,7 @@ export class HomeMaintenancePanel extends LitElement {
     };
 
     private get _editSchema() {
-        const isCount = this._editFormData.trigger_type === "count";
+        const triggerType = this._editFormData.trigger_type;
         const schema: any[] = [
             {
                 name: "trigger_type",
@@ -336,6 +387,7 @@ export class HomeMaintenancePanel extends LitElement {
                         options: [
                             { value: "time", label: "Time-based" },
                             { value: "count", label: "Count-based" },
+                            { value: "runtime", label: "Runtime-based" },
                         ],
                         mode: "dropdown"
                     },
@@ -343,10 +395,15 @@ export class HomeMaintenancePanel extends LitElement {
             },
         ];
 
-        if (isCount) {
+        if (triggerType === "count") {
             schema.push(
                 { name: "count_entity_id", required: true, selector: { entity: {} }, },
                 { name: "count_threshold", required: true, selector: { number: { min: 1, mode: "box" } }, },
+            );
+        } else if (triggerType === "runtime") {
+            schema.push(
+                { name: "runtime_entity_id", required: true, selector: { entity: { filter: { domain: "sensor" } } }, },
+                { name: "runtime_threshold", required: true, selector: { number: { min: 0.1, step: 0.1, mode: "box" } }, },
             );
         } else {
             schema.push(
@@ -431,6 +488,8 @@ export class HomeMaintenancePanel extends LitElement {
             tag: "",
             count_entity_id: "",
             count_threshold: "",
+            runtime_entity_id: "",
+            runtime_threshold: "",
         };
 
         this.tasks = await loadTasks(this.hass!);
@@ -448,6 +507,8 @@ export class HomeMaintenancePanel extends LitElement {
             tag: "",
             count_entity_id: "",
             count_threshold: "",
+            runtime_entity_id: "",
+            runtime_threshold: "",
         };
     }
 
@@ -646,9 +707,10 @@ export class HomeMaintenancePanel extends LitElement {
     }
 
     private async _handleAddTaskClick() {
-        const { title, trigger_type, interval_value, interval_type, last_performed, tag, icon, label, count_entity_id, count_threshold } = this._formData;
+        const { title, trigger_type, interval_value, interval_type, last_performed, tag, icon, label, count_entity_id, count_threshold, runtime_entity_id, runtime_threshold } = this._formData;
 
         const isCount = trigger_type === "count";
+        const isRuntime = trigger_type === "runtime";
 
         if (!title?.trim()) {
             const msg = localize("panel.cards.new.alerts.required", this.hass!.language);
@@ -662,7 +724,13 @@ export class HomeMaintenancePanel extends LitElement {
             return;
         }
 
-        if (!isCount && (!interval_value || !interval_type)) {
+        if (isRuntime && (!runtime_entity_id?.trim() || !runtime_threshold)) {
+            const msg = localize("panel.cards.new.alerts.required", this.hass!.language);
+            alert(msg);
+            return;
+        }
+
+        if (!isCount && !isRuntime && (!interval_value || !interval_type)) {
             const msg = localize("panel.cards.new.alerts.required", this.hass!.language);
             alert(msg);
             return;
@@ -670,8 +738,8 @@ export class HomeMaintenancePanel extends LitElement {
 
         const payload: Record<string, any> = {
             title: title.trim(),
-            interval_value: isCount ? 1 : interval_value,
-            interval_type: isCount ? "days" : interval_type,
+            interval_value: (isCount || isRuntime) ? 1 : interval_value,
+            interval_type: (isCount || isRuntime) ? "days" : interval_type,
             last_performed: this.computeISODate(last_performed),
             tag_id: tag?.trim() || undefined,
             icon: icon?.trim() || "mdi:calendar-check",
@@ -682,6 +750,11 @@ export class HomeMaintenancePanel extends LitElement {
         if (isCount) {
             payload.count_entity_id = count_entity_id?.trim();
             payload.count_threshold = Number(count_threshold);
+        }
+
+        if (isRuntime) {
+            payload.runtime_entity_id = runtime_entity_id?.trim();
+            payload.runtime_threshold = Number(runtime_threshold);
         }
 
         try {
@@ -723,6 +796,8 @@ export class HomeMaintenancePanel extends LitElement {
                 tag: task.tag_id ?? "",
                 count_entity_id: task.count_entity_id ?? "",
                 count_threshold: task.count_threshold ?? "",
+                runtime_entity_id: task.runtime_entity_id ?? "",
+                runtime_threshold: task.runtime_threshold ?? "",
             };
 
             await this.updateComplete;
@@ -738,16 +813,19 @@ export class HomeMaintenancePanel extends LitElement {
         if (!lastPerformedISO) return;
 
         const isCount = this._editFormData.trigger_type === "count";
+        const isRuntime = this._editFormData.trigger_type === "runtime";
         const updates: Record<string, any> = {
             title: this._editFormData.title.trim(),
             trigger_type: this._editFormData.trigger_type || "time",
-            interval_value: isCount ? 1 : Number(this._editFormData.interval_value),
-            interval_type: isCount ? "days" : this._editFormData.interval_type,
+            interval_value: (isCount || isRuntime) ? 1 : Number(this._editFormData.interval_value),
+            interval_type: (isCount || isRuntime) ? "days" : this._editFormData.interval_type,
             last_performed: lastPerformedISO,
             icon: this._editFormData.icon?.trim() || "mdi:calendar-check",
             labels: this._editFormData.label,
             count_entity_id: isCount ? (this._editFormData.count_entity_id?.trim() || null) : null,
             count_threshold: isCount ? Number(this._editFormData.count_threshold) : 0,
+            runtime_entity_id: isRuntime ? (this._editFormData.runtime_entity_id?.trim() || null) : null,
+            runtime_threshold: isRuntime ? Number(this._editFormData.runtime_threshold) : 0,
         };
 
         if (this._editFormData.tag && this._editFormData.tag.trim() !== "") {

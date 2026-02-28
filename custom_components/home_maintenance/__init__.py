@@ -94,6 +94,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Set up state change listeners for count-based tasks
     setup_count_listeners(hass, task_store)
 
+    # Set up state change listeners for runtime-based tasks
+    setup_runtime_listeners(hass, task_store)
+
     return True
 
 
@@ -108,6 +111,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Unsubscribe count listeners
     for unsub in hass.data[const.DOMAIN].get("unsub_count_listeners", []):
+        unsub()
+
+    # Unsubscribe runtime listeners
+    for unsub in hass.data[const.DOMAIN].get("unsub_runtime_listeners", []):
         unsub()
 
     async_unregister_panel(hass)
@@ -240,3 +247,55 @@ def setup_count_listeners(hass: HomeAssistant, task_store: TaskStore) -> None:
 
     unsub = hass.bus.async_listen(EVENT_STATE_CHANGED, handle_state_change)
     hass.data[const.DOMAIN]["unsub_count_listeners"] = [unsub]
+
+
+@callback
+def setup_runtime_listeners(hass: HomeAssistant, task_store: TaskStore) -> None:
+    """Set up state change listeners for runtime-based tasks."""
+    for unsub in hass.data[const.DOMAIN].get("unsub_runtime_listeners", []):
+        unsub()
+
+    @callback
+    def handle_runtime_state_change(event: Event) -> None:
+        """Handle state change for runtime entities."""
+        entity_id = event.data.get("entity_id")
+        new_state = event.data.get("new_state")
+
+        if new_state is None:
+            return
+
+        store = hass.data[const.DOMAIN].get("store")
+        if not store:
+            return
+
+        for task_data in store.get_all():
+            if (
+                task_data.get("trigger_type") == "runtime"
+                and task_data.get("runtime_entity_id") == entity_id
+            ):
+                try:
+                    current_value = float(new_state.state)
+                except (ValueError, TypeError):
+                    continue
+
+                runtime_baseline = task_data.get("runtime_baseline", 0)
+
+                # Detect external reset
+                if current_value < runtime_baseline:
+                    _LOGGER.debug(
+                        "Runtime reset detected for task %s (value %s < baseline %s)",
+                        task_data["id"],
+                        current_value,
+                        runtime_baseline,
+                    )
+                    store.update_runtime_baseline(task_data["id"], 0)
+                else:
+                    # Just refresh the entity state
+                    entity = hass.data[const.DOMAIN]["entities"].get(task_data["id"])
+                    if entity:
+                        hass.async_create_task(
+                            entity.async_update_ha_state(force_refresh=True)
+                        )
+
+    unsub = hass.bus.async_listen(EVENT_STATE_CHANGED, handle_runtime_state_change)
+    hass.data[const.DOMAIN]["unsub_runtime_listeners"] = [unsub]
