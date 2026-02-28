@@ -58,6 +58,8 @@ def websocket_add_task(
             dt_util.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         )
 
+    trigger_type = msg.get("trigger_type", "time")
+
     new_task = HomeMaintenanceTask(
         id=f"home_maintenance_{uuid.uuid4().hex}",
         title=msg["title"],
@@ -66,6 +68,10 @@ def websocket_add_task(
         last_performed=last_performed,
         tag_id=msg.get("tag_id"),
         icon=msg.get("icon"),
+        trigger_type=trigger_type,
+        count_entity_id=msg.get("count_entity_id"),
+        count_threshold=msg.get("count_threshold", 0),
+        current_count=0,
     )
 
     labels = msg.get("labels", [])
@@ -123,6 +129,28 @@ def websocket_remove_task(
     store = hass.data[DOMAIN].get("store")
     task_id = msg["task_id"]
     store.delete(task_id)
+    connection.send_result(msg["id"], {"success": True})
+
+
+@callback
+def websocket_increment_count(
+    hass: HomeAssistant, connection: connection.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Increment the count for a count-based task."""
+    store = hass.data[DOMAIN].get("store")
+    task_id = msg["task_id"]
+    store.increment_count(task_id)
+    connection.send_result(msg["id"], {"success": True})
+
+
+@callback
+def websocket_reset_count(
+    hass: HomeAssistant, connection: connection.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Reset the count for a count-based task."""
+    store = hass.data[DOMAIN].get("store")
+    task_id = msg["task_id"]
+    store.reset_count(task_id)
     connection.send_result(msg["id"], {"success": True})
 
 
@@ -187,6 +215,9 @@ async def async_register_websockets(hass: HomeAssistant) -> None:
                 vol.Optional("tag_id"): str,
                 vol.Optional("icon"): str,
                 vol.Optional("labels"): [str],
+                vol.Optional("trigger_type"): str,
+                vol.Optional("count_entity_id"): str,
+                vol.Optional("count_threshold"): int,
             }
         ),
     )
@@ -223,6 +254,30 @@ async def async_register_websockets(hass: HomeAssistant) -> None:
         messages.BASE_COMMAND_MESSAGE_SCHEMA.extend(
             {
                 vol.Required("type"): "home_maintenance/remove_task",
+                vol.Required("task_id"): str,
+            }
+        ),
+    )
+
+    websocket_api.async_register_command(
+        hass,
+        "home_maintenance/increment_count",
+        websocket_increment_count,
+        messages.BASE_COMMAND_MESSAGE_SCHEMA.extend(
+            {
+                vol.Required("type"): "home_maintenance/increment_count",
+                vol.Required("task_id"): str,
+            }
+        ),
+    )
+
+    websocket_api.async_register_command(
+        hass,
+        "home_maintenance/reset_count",
+        websocket_reset_count,
+        messages.BASE_COMMAND_MESSAGE_SCHEMA.extend(
+            {
+                vol.Required("type"): "home_maintenance/reset_count",
                 vol.Required("task_id"): str,
             }
         ),

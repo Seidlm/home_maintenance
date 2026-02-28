@@ -13,17 +13,20 @@ import { localize } from '../localize/localize';
 import { VERSION } from "./const";
 import { loadConfigDashboard } from "./helpers";
 import { commonStyle } from './styles'
-import { EntityRegistryEntry, IntegrationConfig, IntervalType, INTERVAL_TYPES, getIntervalTypeLabels, Label, Task, Tag } from './types';
-import { completeTask, getConfig, loadLabelRegistry, loadRegistryEntries, loadTags, loadTask, loadTasks, removeTask, saveTask, updateTask } from './data/websockets';
+import { EntityRegistryEntry, IntegrationConfig, IntervalType, INTERVAL_TYPES, getIntervalTypeLabels, Label, Task, Tag, TriggerType } from './types';
+import { completeTask, getConfig, incrementCount, resetCount, loadLabelRegistry, loadRegistryEntries, loadTags, loadTask, loadTasks, removeTask, saveTask, updateTask } from './data/websockets';
 
 interface TaskFormData {
     title: string;
+    trigger_type: TriggerType;
     interval_value: number | "";
     interval_type: string;
     last_performed: string;
     icon: string;
     label: string[];
     tag: string;
+    count_entity_id: string;
+    count_threshold: number | "";
 }
 
 export class HomeMaintenancePanel extends LitElement {
@@ -39,12 +42,15 @@ export class HomeMaintenancePanel extends LitElement {
     // New Task form state
     @state() private _formData: TaskFormData = {
         title: "",
+        trigger_type: "time",
         interval_value: "",
         interval_type: "days",
         last_performed: "",
         icon: "",
         label: [],
         tag: "",
+        count_entity_id: "",
+        count_threshold: "",
     };
     private _advancedOpen: boolean = false;
 
@@ -52,12 +58,15 @@ export class HomeMaintenancePanel extends LitElement {
     @state() private _editingTaskId: string | null = null;
     @state() private _editFormData: TaskFormData = {
         title: "",
+        trigger_type: "time",
         interval_value: "",
         interval_type: "days",
         last_performed: "",
         icon: "",
         label: [],
         tag: "",
+        count_entity_id: "",
+        count_threshold: "",
     };
 
     // Shared overflow menu state
@@ -108,7 +117,10 @@ export class HomeMaintenancePanel extends LitElement {
                 sortable: true,
                 minWidth: "100px",
                 maxWidth: "100px",
-                template: (task: Task) => {
+                template: (task: any) => {
+                    if (task.trigger_type === "count") {
+                        return `${task.current_count} / ${task.count_threshold}`;
+                    }
                     const type = task.interval_type;
                     const isSingular = task.interval_value === 1;
                     const labelKey = isSingular ? type.slice(0, -1) : type;
@@ -121,7 +133,8 @@ export class HomeMaintenancePanel extends LitElement {
                 sortable: true,
                 minWidth: "150px",
                 maxWidth: "150px",
-                template: (task: Task) => {
+                template: (task: any) => {
+                    if (task.trigger_type === "count") return "-";
                     if (!task.last_performed) return "-";
 
                     const date = new Date(this.computeISODate(task.last_performed));
@@ -136,6 +149,14 @@ export class HomeMaintenancePanel extends LitElement {
                 minWidth: "100px",
                 maxWidth: "100px",
                 template: (task: any) => {
+                    if (task.trigger_type === "count") {
+                        const isDue = (task.current_count ?? 0) >= (task.count_threshold ?? 0);
+                        return html`
+                            <span style=${isDue ? "color: var(--error-color, red); font-weight: bold;" : ""}>
+                                ${task.current_count ?? 0} / ${task.count_threshold ?? 0}
+                            </span>`;
+                    }
+
                     const now = new Date();
                     const next = new Date(task.next_due);
                     const isDue = next <= now;
@@ -199,7 +220,15 @@ export class HomeMaintenancePanel extends LitElement {
             interval_value: task.interval_value,
             interval_type: task.interval_type,
             last_performed: task.last_performed ?? 'Never',
+            trigger_type: task.trigger_type ?? "time",
+            count_entity_id: task.count_entity_id,
+            count_threshold: task.count_threshold ?? 0,
+            current_count: task.current_count ?? 0,
             interval_days: (() => {
+                if (task.trigger_type === "count") {
+                    // Sort count-based tasks by how close they are to threshold
+                    return task.count_threshold ? (task.count_threshold - (task.current_count ?? 0)) : Number.MAX_SAFE_INTEGER;
+                }
                 switch (task.interval_type) {
                     case "days":
                         return task.interval_value;
@@ -212,6 +241,11 @@ export class HomeMaintenancePanel extends LitElement {
                 }
             })(),
             next_due: (() => {
+                if (task.trigger_type === "count") {
+                    // For sorting: use a far-future date if not due, past date if due
+                    const isDue = (task.current_count ?? 0) >= (task.count_threshold ?? 0);
+                    return isDue ? new Date(0) : new Date(9999, 0, 1);
+                }
                 const [datePart] = task.last_performed.split("T");
                 const [year, month, day] = datePart.split("-").map(Number);
                 const next = new Date(year, month - 1, day);
@@ -237,23 +271,49 @@ export class HomeMaintenancePanel extends LitElement {
     }
 
     private get _basicSchema() {
-        return [
+        const isCount = this._formData.trigger_type === "count";
+        const schema: any[] = [
             { name: "title", required: true, selector: { text: {} }, },
-            { name: "interval_value", required: true, selector: { number: { min: 1, mode: "box" } }, },
             {
-                name: "interval_type",
+                name: "trigger_type",
                 required: true,
                 selector: {
                     select: {
-                        options: INTERVAL_TYPES.map((type) => ({
-                            value: type,
-                            label: getIntervalTypeLabels(this.hass!.language)[type],
-                        })),
+                        options: [
+                            { value: "time", label: "Time-based" },
+                            { value: "count", label: "Count-based" },
+                        ],
                         mode: "dropdown"
                     },
                 },
             },
-        ]
+        ];
+
+        if (isCount) {
+            schema.push(
+                { name: "count_entity_id", required: true, selector: { entity: {} }, },
+                { name: "count_threshold", required: true, selector: { number: { min: 1, mode: "box" } }, },
+            );
+        } else {
+            schema.push(
+                { name: "interval_value", required: true, selector: { number: { min: 1, mode: "box" } }, },
+                {
+                    name: "interval_type",
+                    required: true,
+                    selector: {
+                        select: {
+                            options: INTERVAL_TYPES.map((type) => ({
+                                value: type,
+                                label: getIntervalTypeLabels(this.hass!.language)[type],
+                            })),
+                            mode: "dropdown"
+                        },
+                    },
+                },
+            );
+        }
+
+        return schema;
     };
 
     private get _advancedSchema() {
@@ -266,27 +326,56 @@ export class HomeMaintenancePanel extends LitElement {
     };
 
     private get _editSchema() {
-        return [
-            { name: "interval_value", required: true, selector: { number: { min: 1, mode: "box" } }, },
+        const isCount = this._editFormData.trigger_type === "count";
+        const schema: any[] = [
             {
-                name: "interval_type",
+                name: "trigger_type",
                 required: true,
                 selector: {
                     select: {
-                        options: INTERVAL_TYPES.map((type) => ({
-                            value: type,
-                            label: getIntervalTypeLabels(this.hass!.language)[type],
-                        })),
+                        options: [
+                            { value: "time", label: "Time-based" },
+                            { value: "count", label: "Count-based" },
+                        ],
                         mode: "dropdown"
                     },
                 },
             },
+        ];
+
+        if (isCount) {
+            schema.push(
+                { name: "count_entity_id", required: true, selector: { entity: {} }, },
+                { name: "count_threshold", required: true, selector: { number: { min: 1, mode: "box" } }, },
+            );
+        } else {
+            schema.push(
+                { name: "interval_value", required: true, selector: { number: { min: 1, mode: "box" } }, },
+                {
+                    name: "interval_type",
+                    required: true,
+                    selector: {
+                        select: {
+                            options: INTERVAL_TYPES.map((type) => ({
+                                value: type,
+                                label: getIntervalTypeLabels(this.hass!.language)[type],
+                            })),
+                            mode: "dropdown"
+                        },
+                    },
+                },
+            );
+        }
+
+        schema.push(
             { type: "constant", name: localize('panel.dialog.edit_task.sections.optional', this.hass!.language), disabled: true },
             { name: "last_performed", selector: { date: {} }, },
             { name: "icon", selector: { icon: {} }, },
             { name: "label", selector: { label: { multiple: true } }, },
             { name: "tag", selector: { entity: { filter: { domain: "tag" } } }, },
-        ]
+        );
+
+        return schema;
     };
 
     private _computeLabel = (schema: { name: string }): string => {
@@ -333,12 +422,15 @@ export class HomeMaintenancePanel extends LitElement {
     private async resetForm() {
         this._formData = {
             title: "",
+            trigger_type: "time",
             interval_value: "",
             interval_type: "days",
             last_performed: "",
             icon: "",
             label: [],
             tag: "",
+            count_entity_id: "",
+            count_threshold: "",
         };
 
         this.tasks = await loadTasks(this.hass!);
@@ -347,12 +439,15 @@ export class HomeMaintenancePanel extends LitElement {
     private async resetEditForm() {
         this._editFormData = {
             title: "",
+            trigger_type: "time",
             interval_value: "",
             interval_type: "days",
             last_performed: "",
             icon: "",
             label: [],
             tag: "",
+            count_entity_id: "",
+            count_threshold: "",
         };
     }
 
@@ -551,9 +646,23 @@ export class HomeMaintenancePanel extends LitElement {
     }
 
     private async _handleAddTaskClick() {
-        const { title, interval_value, interval_type, last_performed, tag, icon, label } = this._formData;
+        const { title, trigger_type, interval_value, interval_type, last_performed, tag, icon, label, count_entity_id, count_threshold } = this._formData;
 
-        if (!title?.trim() || !interval_value || !interval_type) {
+        const isCount = trigger_type === "count";
+
+        if (!title?.trim()) {
+            const msg = localize("panel.cards.new.alerts.required", this.hass!.language);
+            alert(msg);
+            return;
+        }
+
+        if (isCount && (!count_entity_id?.trim() || !count_threshold)) {
+            const msg = localize("panel.cards.new.alerts.required", this.hass!.language);
+            alert(msg);
+            return;
+        }
+
+        if (!isCount && (!interval_value || !interval_type)) {
             const msg = localize("panel.cards.new.alerts.required", this.hass!.language);
             alert(msg);
             return;
@@ -561,13 +670,19 @@ export class HomeMaintenancePanel extends LitElement {
 
         const payload: Record<string, any> = {
             title: title.trim(),
-            interval_value,
-            interval_type,
+            interval_value: isCount ? 1 : interval_value,
+            interval_type: isCount ? "days" : interval_type,
             last_performed: this.computeISODate(last_performed),
             tag_id: tag?.trim() || undefined,
             icon: icon?.trim() || "mdi:calendar-check",
             labels: label ?? [],
+            trigger_type: trigger_type || "time",
         };
+
+        if (isCount) {
+            payload.count_entity_id = count_entity_id?.trim();
+            payload.count_threshold = Number(count_threshold);
+        }
 
         try {
             await saveTask(this.hass!, payload);
@@ -599,12 +714,15 @@ export class HomeMaintenancePanel extends LitElement {
 
             this._editFormData = {
                 title: task.title,
+                trigger_type: task.trigger_type ?? "time",
                 interval_value: task.interval_value,
                 interval_type: task.interval_type,
                 last_performed: task.last_performed ?? "",
                 icon: task.icon ?? "",
                 label: labels.map((l) => l.label_id),
                 tag: task.tag_id ?? "",
+                count_entity_id: task.count_entity_id ?? "",
+                count_threshold: task.count_threshold ?? "",
             };
 
             await this.updateComplete;
@@ -619,13 +737,17 @@ export class HomeMaintenancePanel extends LitElement {
         const lastPerformedISO = this.computeISODate(this._editFormData.last_performed);
         if (!lastPerformedISO) return;
 
+        const isCount = this._editFormData.trigger_type === "count";
         const updates: Record<string, any> = {
             title: this._editFormData.title.trim(),
-            interval_value: Number(this._editFormData.interval_value),
-            interval_type: this._editFormData.interval_type,
+            trigger_type: this._editFormData.trigger_type || "time",
+            interval_value: isCount ? 1 : Number(this._editFormData.interval_value),
+            interval_type: isCount ? "days" : this._editFormData.interval_type,
             last_performed: lastPerformedISO,
             icon: this._editFormData.icon?.trim() || "mdi:calendar-check",
             labels: this._editFormData.label,
+            count_entity_id: isCount ? (this._editFormData.count_entity_id?.trim() || null) : null,
+            count_threshold: isCount ? Number(this._editFormData.count_threshold) : 0,
         };
 
         if (this._editFormData.tag && this._editFormData.tag.trim() !== "") {
