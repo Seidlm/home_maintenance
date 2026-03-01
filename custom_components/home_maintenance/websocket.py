@@ -87,6 +87,7 @@ def websocket_add_task(
         runtime_entity_id=runtime_entity_id,
         runtime_threshold=float(runtime_threshold) if runtime_threshold else 0,
         runtime_baseline=runtime_baseline,
+        area_id=msg.get("area_id"),
     )
 
     labels = msg.get("labels", [])
@@ -235,6 +236,7 @@ async def async_register_websockets(hass: HomeAssistant) -> None:
                 vol.Optional("count_threshold"): int,
                 vol.Optional("runtime_entity_id"): str,
                 vol.Optional("runtime_threshold"): vol.Coerce(float),
+                vol.Optional("area_id"): vol.Any(str, None),
             }
         ),
     )

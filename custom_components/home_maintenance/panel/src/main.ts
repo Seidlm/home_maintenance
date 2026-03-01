@@ -29,6 +29,7 @@ interface TaskFormData {
     count_threshold: number | "";
     runtime_entity_id: string;
     runtime_threshold: number | "";
+    area: string;
 }
 
 export class HomeMaintenancePanel extends LitElement {
@@ -55,6 +56,7 @@ export class HomeMaintenancePanel extends LitElement {
         count_threshold: "",
         runtime_entity_id: "",
         runtime_threshold: "",
+        area: "",
     };
     private _advancedOpen: boolean = false;
 
@@ -73,6 +75,7 @@ export class HomeMaintenancePanel extends LitElement {
         count_threshold: "",
         runtime_entity_id: "",
         runtime_threshold: "",
+        area: "",
     };
 
     // Shared overflow menu state
@@ -373,6 +376,7 @@ export class HomeMaintenancePanel extends LitElement {
             { name: "icon", selector: { icon: {} }, },
             { name: "label", selector: { label: { multiple: true } }, },
             { name: "tag", selector: { entity: { filter: { domain: "tag" } } }, },
+            { name: "area", selector: { area: {} }, },
         ]
     };
 
@@ -430,6 +434,7 @@ export class HomeMaintenancePanel extends LitElement {
             { name: "icon", selector: { icon: {} }, },
             { name: "label", selector: { label: { multiple: true } }, },
             { name: "tag", selector: { entity: { filter: { domain: "tag" } } }, },
+            { name: "area", selector: { area: {} }, },
         );
 
         return schema;
@@ -490,6 +495,7 @@ export class HomeMaintenancePanel extends LitElement {
             count_threshold: "",
             runtime_entity_id: "",
             runtime_threshold: "",
+            area: "",
         };
 
         this.tasks = await loadTasks(this.hass!);
@@ -509,6 +515,7 @@ export class HomeMaintenancePanel extends LitElement {
             count_threshold: "",
             runtime_entity_id: "",
             runtime_threshold: "",
+            area: "",
         };
     }
 
@@ -707,7 +714,7 @@ export class HomeMaintenancePanel extends LitElement {
     }
 
     private async _handleAddTaskClick() {
-        const { title, trigger_type, interval_value, interval_type, last_performed, tag, icon, label, count_entity_id, count_threshold, runtime_entity_id, runtime_threshold } = this._formData;
+        const { title, trigger_type, interval_value, interval_type, last_performed, tag, icon, label, count_entity_id, count_threshold, runtime_entity_id, runtime_threshold, area } = this._formData;
 
         const isCount = trigger_type === "count";
         const isRuntime = trigger_type === "runtime";
@@ -745,6 +752,7 @@ export class HomeMaintenancePanel extends LitElement {
             icon: icon?.trim() || "mdi:calendar-check",
             labels: label ?? [],
             trigger_type: trigger_type || "time",
+            area_id: area?.trim() || undefined,
         };
 
         if (isCount) {
@@ -798,6 +806,7 @@ export class HomeMaintenancePanel extends LitElement {
                 count_threshold: task.count_threshold ?? "",
                 runtime_entity_id: task.runtime_entity_id ?? "",
                 runtime_threshold: task.runtime_threshold ?? "",
+                area: entity?.area_id ?? "",
             };
 
             await this.updateComplete;
@@ -826,6 +835,7 @@ export class HomeMaintenancePanel extends LitElement {
             count_threshold: isCount ? Number(this._editFormData.count_threshold) : 0,
             runtime_entity_id: isRuntime ? (this._editFormData.runtime_entity_id?.trim() || null) : null,
             runtime_threshold: isRuntime ? Number(this._editFormData.runtime_threshold) : 0,
+            area_id: this._editFormData.area?.trim() || null,
         };
 
         if (this._editFormData.tag && this._editFormData.tag.trim() !== "") {

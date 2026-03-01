@@ -58,4 +58,5 @@ export interface Task {
     runtime_entity_id?: string;
     runtime_threshold?: number;
     runtime_baseline?: number;
+    area_id?: string | null;
 }
